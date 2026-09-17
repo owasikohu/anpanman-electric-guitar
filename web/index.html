@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pico ADC Microphone Monitor</title>
+  <style>
+    body { max-width: 680px; margin: 3rem auto; padding: 0 1rem; font: 16px/1.6 system-ui, sans-serif; }
+    label, select, button, input { display: block; margin: .7rem 0; }
+    select { width: 100%; padding: .5rem; }
+    button { padding: .6rem 1rem; }
+    meter { width: 100%; height: 2rem; }
+    .row { display: flex; gap: .7rem; }
+    .note { color: #555; }
+  </style>
+</head>
+<body>
+  <h1>Pico ADC Microphone Monitor</h1>
+
+  <button id="permission">1. マイク使用を許可</button>
+
+  <label for="device">2. 入力デバイス</label>
+  <select id="device"></select>
+
+  <label for="gain">デジタルゲイン: <output id="gainValue">4.0</output> 倍</label>
+  <input id="gain" type="range" min="0" max="16" step="0.5" value="4">
+
+  <label>入力レベル</label>
+  <meter id="level" min="0" max="1" value="0"></meter>
+
+  <div class="row">
+    <button id="start" disabled>モニター開始</button>
+    <button id="stop" disabled>停止</button>
+  </div>
+
+  <p id="status" class="note">最初にマイク使用を許可してください。</p>
+  <p class="note">ハウリング防止のため、最初はヘッドホンまたは小さいスピーカー音量で試してください。</p>
+
+  <script>
+    const permissionButton = document.querySelector('#permission');
+    const deviceSelect = document.querySelector('#device');
+    const gainSlider = document.querySelector('#gain');
+    const gainValue = document.querySelector('#gainValue');
+    const levelMeter = document.querySelector('#level');
+    const startButton = document.querySelector('#start');
+    const stopButton = document.querySelector('#stop');
+    const status = document.querySelector('#status');
+
+    let stream;
+    let context;
+    let gainNode;
+    let animationFrame;
+
+    async function listInputs() {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const inputs = devices.filter(device => device.kind === 'audioinput');
+      deviceSelect.replaceChildren(...inputs.map(device => {
+        const option = document.createElement('option');
+        option.value = device.deviceId;
+        option.textContent = device.label || `マイク ${deviceSelect.length + 1}`;
+        if (device.label.includes('Pico ADC Microphone')) option.selected = true;
+        return option;
+      }));
+      startButton.disabled = inputs.length === 0;
+    }
+
+    async function stopMonitor() {
+      cancelAnimationFrame(animationFrame);
+      stream?.getTracks().forEach(track => track.stop());
+      if (context) await context.close();
+      stream = context = gainNode = undefined;
+      levelMeter.value = 0;
+      startButton.disabled = false;
+      stopButton.disabled = true;
+      status.textContent = '停止しました。';
+    }
+
+    permissionButton.onclick = async () => {
+      try {
+        const temporary = await navigator.mediaDevices.getUserMedia({ audio: true });
+        temporary.getTracks().forEach(track => track.stop());
+        await listInputs();
+        status.textContent = 'Pico ADC Microphoneを選んで開始してください。';
+      } catch (error) {
+        status.textContent = `マイクを開けません: ${error.message}`;
+      }
+    };
+
+    gainSlider.oninput = () => {
+      gainValue.value = Number(gainSlider.value).toFixed(1);
+      if (gainNode) gainNode.gain.value = Number(gainSlider.value);
+    };
+
+    startButton.onclick = async () => {
+      try {
+        await stopMonitor();
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            deviceId: { exact: deviceSelect.value },
+            channelCount: 1,
+            sampleRate: 48000,
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false
+          }
+        });
+
+        context = new AudioContext({ sampleRate: 48000 });
+        const source = context.createMediaStreamSource(stream);
+        gainNode = context.createGain();
+        gainNode.gain.value = Number(gainSlider.value);
+        const analyser = context.createAnalyser();
+        analyser.fftSize = 1024;
+        source.connect(gainNode).connect(analyser).connect(context.destination);
+
+        const samples = new Float32Array(analyser.fftSize);
+        const updateMeter = () => {
+          analyser.getFloatTimeDomainData(samples);
+          let sum = 0;
+          for (const sample of samples) sum += sample * sample;
+          levelMeter.value = Math.min(1, Math.sqrt(sum / samples.length) * 4);
+          animationFrame = requestAnimationFrame(updateMeter);
+        };
+        updateMeter();
+
+        startButton.disabled = true;
+        stopButton.disabled = false;
+        status.textContent = 'モニター中です。';
+      } catch (error) {
+        status.textContent = `開始できません: ${error.message}`;
+      }
+    };
+
+    stopButton.onclick = stopMonitor;
+  </script>
+</body>
+</html>

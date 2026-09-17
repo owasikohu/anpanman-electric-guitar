@@ -1,0 +1,11 @@
+/build*/
+*.uf2
+*.elf
+*.bin
+*.hex
+*.map
+*.wav
+__pycache__/
+.DS_Store
+.idea/
+.vscode/
